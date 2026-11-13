@@ -30,3 +30,29 @@ The JSON records include the question, model answer, LM Studio reasoning item (w
 
 Open [Experiments/charxiv_lm_studio_pipeline.ipynb](Experiments/charxiv_lm_studio_pipeline.ipynb). The notebook locates the project root from its working directory, imports the pipeline from `Experiments/`, and saves results to the root `outputs/` directory. Install the root [`requirements.txt`](requirements.txt) in the notebook kernel first.
 
+## Four prompt strategies
+
+The separate experiment in [Experiments/charxiv_prompt_strategies.py](Experiments/charxiv_prompt_strategies.py) applies four strategies to **the same 25 seeded charts**. The system prompts are defined in that script and saved with the JSON output:
+
+| Strategy | Prompt behavior | LM Studio calls per chart |
+| --- | --- | ---: |
+| Direct | Brief explanation and final answer | 1 |
+| Structured | List relevant chart labels, values, and units before explaining | 1 |
+| Chain-of-thought | Explain chart-reading and calculation steps | 1 |
+| Verification | Draft an answer, then check it against the chart and revise | 2 |
+
+With the defaults, this produces 100 result records and makes 125 LM Studio requests. Every record contains `prompt_strategy`, the system prompt, the same answer/reasoning/reference fields as the baseline, and a path to a chart copied under `outputs/prompt_strategies/images/`. The `outputs/` directory is ignored by Git.
+
+Run from the repository root after the setup above:
+
+```bash
+python Phase1/run_charxiv_prompt_strategies.py
+```
+
+The result is `outputs/prompt_strategies/charxiv_answers_v2.json`. The revised prompts ask the model to compare candidates over the same chart interval before abstaining; the earlier `charxiv_answers.json` run remains available. The file is updated after each completed strategy. If a run stops, keep the same settings and resume it with:
+
+```bash
+python Phase1/run_charxiv_prompt_strategies.py --resume
+```
+
+The notebook [Experiments/charxiv_prompt_strategies.ipynb](Experiments/charxiv_prompt_strategies.ipynb) runs the same code with editable settings and a request progress bar. To evaluate another locally loaded model, pass its LM Studio model id with `--model` and use a different `--output` path.
