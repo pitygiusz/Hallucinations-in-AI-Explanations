@@ -102,7 +102,9 @@ def _save_image(example: dict[str, Any], sample_number: int, output_dir: Path) -
 
 
 def _write_json(output: Path, document: dict[str, Any]) -> None:
-    output.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary = output.with_name(output.name + ".tmp")
+    temporary.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.replace(output)
 
 
 def run_pipeline(

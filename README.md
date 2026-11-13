@@ -24,7 +24,7 @@ python Phase1/run_charxiv_pipeline.py
 
 By default, it writes `outputs/charxiv_lm_studio_answers.json` and copies each sampled chart into `outputs/images/`. Each JSON result stores its relative image path. 
 
-The JSON records include the question, model answer, LM Studio reasoning item (when returned), CharXiv reference answer, saved image path, sample index, seed, model, and dataset split. 
+The JSON records include the question, model answer, LM Studio reasoning item (when returned), CharXiv reference answer, saved image path, sample index, seed, model, and dataset split. It is initialized with an empty `results` list, then atomically updated after each completed chart; if a run is interrupted, completed records remain and `status` stays `in_progress`.
 
 ### Notebook
 
@@ -49,7 +49,7 @@ Run from the repository root after the setup above:
 python Phase1/run_charxiv_prompt_strategies.py
 ```
 
-The result is `outputs/prompt_strategies/charxiv_answers_v2.json`. The revised prompts ask the model to compare candidates over the same chart interval before abstaining; the earlier `charxiv_answers.json` run remains available. The file is updated after each completed strategy. If a run stops, keep the same settings and resume it with:
+The result is `outputs/prompt_strategies/charxiv_answers_v2.json`. The revised prompts ask the model to compare candidates over the same chart interval before abstaining; the earlier `charxiv_answers.json` run remains available. The JSON is atomically updated after each completed strategy. If a run stops, keep the same settings and resume it with:
 
 ```bash
 python Phase1/run_charxiv_prompt_strategies.py --resume

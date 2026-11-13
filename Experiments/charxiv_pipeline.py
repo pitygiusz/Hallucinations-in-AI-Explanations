@@ -103,6 +103,12 @@ def _extract_output(response_json: dict[str, Any]) -> tuple[str, str]:
     return "\n\n".join(reasoning), "\n\n".join(messages) or json.dumps(response_json, ensure_ascii=False)
 
 
+def _write_json_atomic(output: Path, document: dict[str, Any]) -> None:
+    temporary = output.with_name(output.name + ".tmp")
+    temporary.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.replace(output)
+
+
 def run_pipeline(
     *,
     output_path: str | Path = DEFAULT_OUTPUT_PATH,
@@ -126,7 +132,19 @@ def run_pipeline(
     images_dir = output.parent / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
 
-    results: list[dict[str, Any]] = []
+    document = {
+        "dataset": dataset_id,
+        "split": split,
+        "sample_size": n,
+        "seed": seed,
+        "model": model,
+        "api_url": api_url,
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "status": "in_progress",
+        "results": [],
+    }
+    _write_json_atomic(output, document)
+
     for sample_number, row_index in enumerate(selected_indices, start=1):
         example = _prepare_example(rows[row_index], row_index)
         image_name = Path(example["example_id"]).name
@@ -147,7 +165,7 @@ def run_pipeline(
         response = requests.post(api_url, json=payload, timeout=timeout)
         response.raise_for_status()
         reasoning, answer = _extract_output(response.json())
-        results.append({
+        document["results"].append({
             "sample_number": sample_number,
             "dataset_index": row_index,
             "example_id": example["example_id"],
@@ -158,19 +176,12 @@ def run_pipeline(
             "reasoning_returned": bool(reasoning),
             "image_path": image_path.relative_to(output.parent).as_posix(),
         })
+        _write_json_atomic(output, document)
         print(f"[{sample_number}/{n}] completed: {example['example_id']}", flush=True)
 
-    document = {
-        "dataset": dataset_id,
-        "split": split,
-        "sample_size": n,
-        "seed": seed,
-        "model": model,
-        "api_url": api_url,
-        "created_at_utc": datetime.now(timezone.utc).isoformat(),
-        "results": results,
-    }
-    output.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    document["status"] = "complete"
+    document["completed_at_utc"] = datetime.now(timezone.utc).isoformat()
+    _write_json_atomic(output, document)
     return output.resolve()
 
 
