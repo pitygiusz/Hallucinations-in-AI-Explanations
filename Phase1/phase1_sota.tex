@@ -1,0 +1,71 @@
+% Phase 1 literature-review section. Compile with phase1_sota.bib available
+% on the BibTeX search path and the ACL bibliography style installed.
+\section{State of the Art}
+\label{sec:state-of-the-art}
+
+This project asks whether a model can answer a chart question correctly while its explanation misreads a value, makes a claim unsupported by the chart, or uses invalid arithmetic. We evaluate the final answer and the explanation separately. An explanation claim counts as supported only if it follows from the chart, any available source table, and the question. This checks what the model wrote, without claiming to know how it reached the answer internally. The 15 works below were selected for their relevance to chart explanations, chart hallucinations, realistic evaluation, and the generation or verification methods proposed for this project.
+
+\subsection{Three closest studies}
+
+\paragraph{ChartQA-X (Hegde et al., 2026)~\cite{hegde2026chartqax}.} ChartQA-X is the closest published source of chart questions paired with natural-language explanations: it contains 30,799 chart--question--answer-- explanation samples across four chart types. The authors generate candidate explanations and select them using criteria including faithfulness, informativeness, coherence, and perplexity, then fine-tune models to produce answers and explanatory text. In a human study with 245 participants, the selected model explanations were judged better than human-written ones for accuracy and logic, and comparable for clarity and overall quality. The paper also reports gains of up to 18.96 percentage points in question-answering accuracy and 24.57 points in its explanation-quality measure after fine-tuning. These are results for the authors' training and evaluation protocol, not evidence that every individual explanation claim is supported by its chart. For our project, ChartQA-X provides examples and an explanation-generation baseline, while claim-level checking is still needed to identify the ``right answer, wrong reason'' cases that aggregate quality scores can miss.
+
+\paragraph{ChartHal (Wang et al., 2025)~\cite{wang2025charthal}.} ChartHal directly probes hallucination in chart understanding with 1,062 human-validated chart question-answering cases. Its taxonomy includes normal questions as well as prompts referring to irrelevant, nonexistent, or contradictory chart information, allowing a model's willingness to invent unsupported content to be tested explicitly. On the full benchmark, the authors report accuracy of 34.46\% for GPT-5 and 22.79\% for o4-mini. Their analysis finds that absent and contradictory information is particularly likely to induce hallucination. This makes ChartHal a useful source of stress tests and error categories for our annotation guide. Its unit of evaluation is the model's response to a question, however, rather than each factual and arithmetic claim in an explanation conditional on a correct final answer; those finer labels must be created separately. ChartHal is a preprint, and reuse of its released data should follow the access and licence audit in the dataset section of this report.
+
+\paragraph{FaithChart (Mai et al., 2026)~\cite{mai2026faithchart}.} FaithChart is the most directly adjacent study of visual grounding in chart explanations, currently available as an SSRN preprint. It introduces sufficiency and comprehensiveness tests that perturb cited image regions and observe how predictions change. Its FaithChart-1500 benchmark contains 1,498 human-verified chart-explanation samples with reasoning traces. Across four multimodal models, the authors report that ranking by answer accuracy differs from ranking by their grounding metrics, so a correct answer is not a reliable proxy for visual grounding. Their structured-evidence model reportedly reduces the gap between the two grounding metrics by 88\%, at a 5.5-point accuracy cost; these claims should be independently checked when the full benchmark and protocol are available. Perturbation sensitivity is related to, but not identical with, checking whether each written value, comparison, and calculation is justified by the original chart. Our planned contribution is therefore a complementary claim-level audit and controlled method comparison, not a claim to introduce chart-explanation grounding for the first time.
+
+\subsection{Twelve supporting studies}
+
+\paragraph{ChartQA (Masry et al., 2022)~\cite{masry2022chartqa}.} ChartQA introduced roughly 32,700 chart questions, combining human-written questions with questions derived from chart summaries, and models that use both chart images and underlying tables. Its models improved over prior chart question-answering baselines, but the benchmark evaluates answers rather than the factual support of generated explanations. The released charts and source tables are consequently well suited to our value and arithmetic checks.
+
+\paragraph{ChartQAPro (Masry et al., 2025)~\cite{masry2025chartqapro}.} ChartQAPro evaluates 21 models on 1,948 questions about 1,341 charts from 99 sources, including dashboards, infographics, and unanswerable questions. In the paper, Claude 3.5 Sonnet falls from 90.5\% accuracy on the ChartQA test set to 55.81\% on the ChartQAPro test set. This gap motivates a realistic external evaluation set, although ChartQAPro does not label explanation claims.
+
+\paragraph{CharXiv (Wang et al., 2024)~\cite{wang2024charxiv}.} CharXiv curates 2,323 scientific charts with descriptive and reasoning questions, including cases that cannot be answered from the figure. Its evaluation reports 47.1\% accuracy for GPT-4o and 80.5\% for humans, demonstrating the difficulty of realistic scientific charts. It provides a valuable domain shift for our study, but its answer labels alone cannot reveal whether a correct model answer has an unsupported explanation.
+
+\paragraph{ChartInsighter (Wang et al., 2025)~\cite{wang2025chartinsighter}.} ChartInsighter studies hallucinated time-series chart summaries using a benchmark of 75 charts with sentence-level error annotations and a generation pipeline with data-analysis modules and consistency checks. The authors report the lowest summary hallucination rate among their evaluated systems on that benchmark. Its taxonomy and sentence-level annotation practice inform our labels, although summaries are not question-conditioned explanations.
+
+\paragraph{Tackling Hallucinations in Neural Chart Summarization (Obaid ul Islam et al., 2023)~\cite{islam2023chart}.} This study examines chart-summary training data and finds that target texts often contain information absent from the chart input. It applies natural language inference to filter training examples and reports a significant reduction in hallucinations in human evaluation, with further gains from better chart-context encoding. The result motivates explicit evidence checks for explanations, while its summary-generation setting differs from our correct-answer subset.
+
+\paragraph{DePlot (Liu et al., 2023)~\cite{liu2023deplot}.} DePlot translates a chart image into a linearized table before a language model answers the question, separating visual extraction from text reasoning. On ChartQA's human-written questions, the paper reports a 29.4\% improvement over its fine-tuned comparison model under one-shot prompting. For our task, the extracted table makes numerical claims inspectable, but a misread chart value can still propagate into a fluent explanation.
+
+\paragraph{TinyChart (Zhang et al., 2024)~\cite{zhang2024tinychart}.} TinyChart trains a 3-billion-parameter chart model to produce executable Python programs for numerical reasoning and merges visual tokens for more efficient inference. The paper evaluates ChartQA, Chart-to-Text, Chart-to-Table, OpenCQA, and ChartX and reports stronger ChartQA performance than several larger chart models and GPT-4V. Its program-based arithmetic is an appropriate comparison for our proposed separation of value extraction and computation, though executable calculations do not validate their inputs.
+
+\paragraph{Chain-of-Thought Prompting (Wei et al., 2022)~\cite{wei2022cot}.} Chain-of-thought prompting uses worked examples with intermediate reasoning steps to improve performance on arithmetic, commonsense, and symbolic tasks. The authors report substantial gains on benchmarks including GSM8K as model scale increases. For chart questions, it is an essential baseline, but each additional stated step also creates a claim whose support must be assessed.
+
+\paragraph{Self-Consistency (Wang et al., 2023)~\cite{wang2023selfconsistency}.} Self-consistency samples multiple reasoning paths and selects the most common final answer rather than relying on one chain. On GSM8K and other reasoning benchmarks, it improves answer accuracy over a single chain-of-thought sample. Because voting chooses an answer rather than verifying cited chart values, we will measure its explanation error rate separately from its answer accuracy.
+
+\paragraph{Unfaithful Chain-of-Thought Explanations (Turpin et al., 2023)~\cite{turpin2023unfaithful}.} Turpin and colleagues vary biasing features in prompts across 13 BIG-Bench Hard tasks and a social-bias task, then inspect the generated reasoning. Models often omit the biasing influence and rationalize biased answers, with the paper reporting accuracy drops of up to 36\% under bias. This cautions against treating a plausible explanation as evidence of the model's internal decision process; our labels instead test observable support in chart data.
+
+\paragraph{Faithful Chain-of-Thought Reasoning (Lyu et al., 2023)~\cite{lyu2023faithful}.} This method translates a question into symbolic steps and lets a deterministic solver produce the answer, making the answer follow from the represented calculation. Across ten benchmarks in mathematics, planning, multi-hop question answering, and relational inference, it outperforms standard chain-of-thought on nine. The result motivates verifiable intermediate records, provided that chart values entering the solver are checked first.
+
+\paragraph{Chain-of-Verification (Dhuliawala et al., 2024)~\cite{dhuliawala2024cove}.} Chain-of-Verification drafts an answer, formulates factual checks, answers them independently, and revises the response. Experiments on Wikidata list questions, MultiSpanQA, and long-form generation report fewer hallucinations than direct generation. We can adapt this sequence to check chart labels, values, units, and arithmetic, while testing whether a verifier that sees the same image repeats the generator's perceptual mistakes.
+
+\subsection{Published quantitative comparisons}
+
+Table~\ref{tab:sota-results} records selected results with their original datasets and evaluation splits. These values compare methods only within a given benchmark and scoring protocol; they are not a cross-paper leaderboard for explanation reliability. ``Full set'' denotes the authors' 1,062-item ChartHal evaluation set, for which no separate test split is specified.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Selected published answer-accuracy results. Each value retains its
+reported dataset and split; none measures claim-level explanation support.}
+\label{tab:sota-results}
+\begin{tabular}{llll}
+\hline
+Study & Model & Dataset (split) & Accuracy \\
+\hline
+ChartQAPro~\cite{masry2025chartqapro} & Claude 3.5 Sonnet & ChartQA (test) & 90.5\% \\
+ChartQAPro~\cite{masry2025chartqapro} & Claude 3.5 Sonnet & ChartQAPro (test) & 55.81\% \\
+ChartHal~\cite{wang2025charthal} & GPT-5 & ChartHal (full set) & 34.46\% \\
+ChartHal~\cite{wang2025charthal} & o4-mini & ChartHal (full set) & 22.79\% \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Implication for the proposed study}
+
+Existing chart benchmarks establish difficult questions and credible answer baselines; recent work also supplies explanation examples, chart-specific hallucination categories, and tests of visual grounding. The remaining measurement gap for this project is the joint, claim-level evaluation of \emph{correct answer, flawed explanation} under controlled prompting and verification conditions. We will compare answer accuracy with the conditional rate of at least one unsupported material explanation claim given a correct answer, and report error types and computational cost for each method. Claims will be adjudicated against chart images and source tables where available, with separate labels for incorrect values, unsupported comparisons, invalid arithmetic, and insufficient evidence. This design also tests whether longer reasoning or answer voting improves the final answer while leaving the explanation unreliable.
+
+% If this section is \input into a larger report, place these two commands
+% at the end of the main document instead.
+\bibliographystyle{acl}
+\bibliography{phase1_sota}
