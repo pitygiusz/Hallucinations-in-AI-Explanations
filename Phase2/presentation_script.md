@@ -55,8 +55,6 @@ The remaining work falls into three groups.
 
 *Reasoning and verification*: chain-of-thought, self-consistency, Chain-of-Verification, and Turpin and colleagues' finding that plausible explanations can omit what actually influenced the model.
 
-Existing work either scores answers or scores whole explanations. Few studies look at individual claims in an explanation, and almost none compare prompting strategies on that basis. That is the gap we target.
-
 ---
 
 ## Slide 4: Proposed methodology (3:05 - 5:05)
@@ -138,7 +136,7 @@ Our pilot shows the phenomenon exists, but five charts can't support firm conclu
 
 **One: complete the human-annotated set.** We'll extend the pilot to 25 chart-question pairs, with two models and four strategies, giving 200 responses. All four team members annotate them.
 
-**Two: a proper annotation protocol.** We'll define the unit of annotation, most likely the atomic claim, following FActScore. We'll write a codebook with definitions and examples for our four error types. We'll measure inter-annotator agreement with Cohen's kappa or Krippendorff's alpha on an overlapping subset, with adjudication of disagreements.
+**Two: a proper annotation protocol.** We'll write a codebook with definitions and examples for our four error types. We'll measure inter-annotator agreement with Cohen's kappa or Krippendorff's alpha on an overlapping subset, with adjudication of disagreements.
 
 **Three: validate the LLM judge before scaling.** We'll fix the judge model, version and prompt, and set an acceptance threshold, such as a minimum F1 or kappa against the human labels. Only after the judge passes does it annotate the large set of one thousand to ten thousand responses.
 
