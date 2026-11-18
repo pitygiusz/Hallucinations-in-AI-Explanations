@@ -1,5 +1,16 @@
 # Hallucinations-in-AI-Explanations
 
+## OpenAI Batch judge evaluation
+
+[Judge workflow and annotation codebook](Experiments/openai_batch_judge.md) describes
+the blinded Batch API pipeline for saved experiment results. It produces
+claim-level evidence labels, answer accuracy, correct-answer explanation error
+rates, chart-clustered confidence intervals, paired comparisons, human agreement
+metrics when labels are supplied, and token-usage records. Preparation is local;
+only the explicit `submit` command sends paid requests. Install
+[requirements-judge.txt](requirements-judge.txt) and follow the small development
+batch example before scaling to all results.
+
 ## Quick CharXiv run
 
 The starter pipeline samples 25 reasoning questions from the CharXiv **validation** split using seed `42`, sends each chart and question to a local vision-capable model through LM Studio, and writes the model response alongside the reference answer to JSON. The same seed and dataset ordering reproduce the same sample.
