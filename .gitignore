@@ -1,4 +1,5 @@
-/outputs/
+/outputs/eden_gemma4_e4b/images
+/outputs/images/
 __pycache__/
 *.py[cod]
 .venv/

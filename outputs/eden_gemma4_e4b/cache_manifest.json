@@ -1,0 +1,8 @@
+{
+  "model_id": "google/gemma-4-E4B-it",
+  "model_revision": "4ecc2ba63bcac23ba4a767fc87025b1450f84c9c",
+  "dataset_id": "princeton-nlp/CharXiv",
+  "dataset_revision": "f441eb632fc62f6f777830a0f47619e6e86459b0",
+  "cache_dir": null,
+  "prepared_at_utc": "2026-11-17T18:05:44.415653+00:00"
+}
