@@ -17,6 +17,8 @@ Hello everyone. We are presenting our NLP project, "Right Answer, Wrong Reason: 
 
 *[Slide: a chart with a question. Two outputs below it: "Final answer: correct ✔" and "Explanation: contains a wrong value ✘"]*
 
+The question shown with this chart is: “For the MSRC-21 dataset, at which query size is the mean absolute error lower without propagation than with propagation?”
+
 Language and vision-language models can answer questions about charts, and they usually explain how they got there. But a correct final answer doesn't guarantee a correct explanation. A model can pick the right bar or the right year while describing a value that isn't in the chart, attaching a label to the wrong bar, or doing arithmetic that doesn't support its own conclusion.
 
 This matters most for scientific charts and numerical data, where we need to trust both the result and the evidence behind it. If we only score the final answer, these errors stay invisible.
@@ -96,7 +98,7 @@ One important caveat. This pilot audit was done by a single reviewer using an LL
 
 ---
 
-## Slide 6: Preliminary findings (6:15 - 8:15)
+## Slide 6: Preliminary findings (6:15 - 7:00)
 
 *[Slide: accuracy table. Gemma 2/20, Qwen 12/20]*
 
@@ -108,25 +110,49 @@ Two things stand out. No model answered chart four correctly under any strategy.
 
 Now the core question. Among those 14 correct responses, **at least 3, or 21 percent, contained a clearly contradicted claim** in the explanation or in the returned reasoning. This is a lower bound, not a final hallucination rate, because a single reviewer checked only for clear contradictions.
 
-*[Slide: three examples]*
-
-Here are the three cases.
-
-**One: Gemma with verification, chart one.** The final answer, 1905, was correct. But the reasoning trace said 1905 starts *above* 1885, when it starts below. It invented starting values, and its own calculation gave equal slopes, which doesn't support either year. It then accepted the draft anyway. This is a reading error plus an inconsistency between answer and reasoning.
-
-**Two: Qwen with structured prompting, chart two.** The answer, size 5, was correct. But the explanation attached the label 0.7 to the wrong bar. The evidence list format gave a right answer with an invented supporting label.
-
-**Three: Gemma with direct prompting, chart five.** The answer, 0.06, was correct. But the explanation put the competing line at about 0.38 when it's around 0.3, exaggerating the gap.
-
-In all three cases, scoring only the final answer would have hidden the problem.
-
 *[Slide: strategy table, showing correct-but-flawed per strategy]*
 
 By strategy: direct 1 of 4, structured 1 of 2, verification 1 of 4, and chain-of-thought 0 of 4. Chain-of-thought had no flagged cases here. However, 14 correct responses is too little to formulate any conclusions.
 
 ---
 
-## Slide 7: Next steps (8:15 - 10:00)
+## Slide 7: Case 1 - Log hazard rates (7:00 - 7:25)
+
+*[Slide: three examples]*
+
+*[Slide: chart one, Gemma with verification, and the first correct-answer-wrong-reason example]*
+
+Here are the three cases.
+
+The question for this chart is: “Which year does the log hazard rate exhibit the steepest slope for women from age 60 to 100?”
+
+**One: Gemma with verification, chart one.** The final answer, 1905, was correct. But the reasoning trace said 1905 starts *above* 1885, when it starts below. It invented starting values, and its own calculation gave equal slopes, which doesn't support either year. It then accepted the draft anyway. This is a reading error plus an inconsistency between answer and reasoning.
+
+---
+
+## Slide 8: Case 2 - Mean absolute error (7:25 - 7:50)
+
+*[Slide: chart two, Qwen with structured prompting, and the second example]*
+
+The question for this chart is: “What is the query size when the mean absolute error of 'w/o propagation' less than 'w propagation' on the dataset 'MSRC-21'?”
+
+**Two: Qwen with structured prompting, chart two.** The answer, size 5, was correct. But the explanation attached the label 0.7 to the wrong bar. The evidence list format gave a right answer with an invented supporting label.
+
+---
+
+## Slide 9: Case 3 - Density estimation error (7:50 - 8:15)
+
+*[Slide: chart five, Gemma with direct prompting, and the third example]*
+
+The question for this chart is: “Which h value has a solid line with the lowest density estimation error at time t=25s?”
+
+**Three: Gemma with direct prompting, chart five.** The answer, 0.06, was correct. But the explanation put the competing line at about 0.38 when it's around 0.3, exaggerating the gap.
+
+In all three cases, scoring only the final answer would have hidden the problem.
+
+---
+
+## Slide 10: Next steps (8:15 - 10:00)
 
 *[Slide: next steps overview. Annotation, judge validation, scale-up, analysis]*
 
