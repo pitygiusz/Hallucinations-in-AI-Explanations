@@ -1,0 +1,6 @@
+-r requirements.txt
+torch
+torchvision
+transformers>=5.13.0,<6
+accelerate>=1.0
+huggingface-hub>=1.0

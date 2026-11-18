@@ -1,1 +1,6 @@
 /outputs/
+__pycache__/
+*.py[cod]
+.venv/
+.venv-eden/
+eden-*.out
