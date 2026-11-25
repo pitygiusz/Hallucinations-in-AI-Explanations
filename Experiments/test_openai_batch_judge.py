@@ -1,5 +1,6 @@
 """Offline regression checks; never contact OpenAI or submit paid work."""
 import argparse
+import copy
 import json
 import tempfile
 import unittest
@@ -14,11 +15,12 @@ def field(quote="1", verdict="supported", review=False):
     return {"applicable": True, "coverage_complete": True, "requires_review": review,
             "review_reason": "", "claims": [{"quote": quote, "verdict": verdict,
             "categories": [] if verdict == "supported" else ["chart_reading"],
-            "material": True, "evidence": "The bar is labeled 1."}]}
+            "material": True, "evidence": "The bar is labeled 1.",
+            "resolution": "retained", "correction_quote": "", "numeric_reference": "", "numeric_value": None}]}
 
 
 def ground(verdict="supported"):
-    return {"chart_readability": "readable", "final_explanation": field(verdict=verdict),
+    return {"chart_readability": "readable", "chart_types": ["bar"], "final_explanation": field(verdict=verdict),
             "returned_reasoning": {"applicable": False, "coverage_complete": True,
                                    "requires_review": False, "review_reason": "", "claims": []}}
 
@@ -29,9 +31,10 @@ class JudgeTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.source = self.root / "experiment.json"
-        (self.root / "image.png").write_bytes(b"local-image-fixture")
+        for c in range(2):
+            (self.root / f"image{c}.png").write_bytes(f"local-image-fixture-{c}".encode())
         records = [{"example_id": f"images/{c}.png", "question": f"Question {c}?",
-                    "correct_answer": "1", "image_path": "image.png", "prompt_strategy": s,
+                    "correct_answer": "1", "image_path": f"image{c}.png", "prompt_strategy": s,
                     "model_answer": "Final answer: 1", "model_reasoning": "",
                     "generation_truncated": False} for c in range(2) for s in ["direct", "structured"]]
         judge.save(self.source, {"dataset": "test", "split": "validation", "model": "generator-secret",
@@ -60,6 +63,10 @@ class JudgeTests(unittest.TestCase):
                 self.assertNotIn("reference_answer", data)
                 self.assertNotIn("prompt_strategy", data)
                 self.assertEqual(body["input"][0]["content"][1]["detail"], "high")
+        for packet in judge.lines(self.run_dir / "human_grounding_packets.jsonl"):
+            self.assertNotIn("generator-secret", json.dumps(packet))
+            self.assertNotIn("reference_answer", packet)
+            self.assertTrue((self.run_dir / packet["image_path"]).exists())
         manifest["effort"] = "high"
         judge.save(self.run_dir / "manifest.json", manifest)
         with self.assertRaisesRegex(ValueError, "protocol"):
@@ -150,6 +157,70 @@ class JudgeTests(unittest.TestCase):
         self.assertEqual(result["human_vs_human"]["a vs b"]["answer_correct"]["n"], 4)
         self.assertEqual(result["judge_vs_human"]["a"]["returned_reasoning_unsupported"]["n"], 0)
 
+    def test_human_claim_inventory_derives_labels_and_rejects_conflicts(self):
+        self.prepare()
+        records = judge.lines(self.run_dir / "records.jsonl")
+        path = self.root / "claims.jsonl"
+        entry = {"response_id": records[0]["response_id"], "annotator": "a", "claim_annotations": ground("contradicted")}
+        judge.jsonl(path, [entry])
+        normalized = judge.human_entries(path, records)
+        self.assertTrue(normalized[0]["final_explanation_unsupported"])
+        entry["final_explanation_unsupported"] = False
+        judge.jsonl(path, [entry])
+        with self.assertRaisesRegex(ValueError, "conflicts"):
+            judge.human_entries(path, records)
+
+    def test_verification_transitions_and_shared_success_pairs(self):
+        self.prepare()
+        records = judge.lines(self.run_dir / "records.jsonl")
+        outcomes = []
+        for r in records:
+            correct = r["strategy"] == "direct"
+            outcomes.extend([
+                {"custom_id": r["response_id"] + "-answer-0", "status": "valid", "judgment": {
+                    "extracted_answer": "1", "verdict": "correct" if correct else "incorrect", "justification": "fixture"}},
+                {"custom_id": r["response_id"] + "-grounding-0", "status": "valid", "judgment": ground()}])
+        judge.jsonl(self.run_dir / "judgments.jsonl", outcomes)
+        rows, _ = judge.joined(self.run_dir, judge.load_manifest(self.run_dir))
+        rows[0]["draft_answer_correct"] = False
+        rows[0]["draft_final_metrics"] = {"unsupported": True}
+        metrics = judge.metric_values(rows[0])
+        self.assertTrue(metrics["verification_answer_recovery"])
+        self.assertTrue(metrics["verification_error_recovery"])
+        comparison = next(c for c in judge.paired_comparisons(rows, 100, 42)
+                          if c["metric"] == "correct_answer_final_explanation_unsupported")
+        self.assertEqual(comparison["paired_charts"], 0)
+        self.assertEqual(comparison["matched_chart_candidates"], 2)
+        self.assertIsNone(comparison["difference_right_minus_left"])
+
+    def test_report_uses_verified_chart_types_and_excludes_unknown_truncation(self):
+        metadata = self.root / "metadata.json"
+        judge.save(metadata, {"images/0.png": {"chart_types": ["line", "scatter"], "human_verified": True}})
+        self.args.chart_metadata = metadata
+        self.prepare()
+        records = judge.lines(self.run_dir / "records.jsonl")
+        # Freeze unknown truncation through preparation, rather than editing a run.
+        source = judge.read(self.source)
+        source["results"][0]["generation_truncated"] = None
+        judge.save(self.source, source)
+        self.args.run = self.root / "unknown-truncation"
+        judge.prepare(self.args)
+        records = judge.lines(self.args.run / "records.jsonl")
+        outcomes = []
+        for r in records:
+            outcomes.extend([
+                {"custom_id": r["response_id"] + "-answer-0", "status": "valid", "judgment": {
+                    "extracted_answer": "1", "verdict": "correct", "justification": "fixture"}},
+                {"custom_id": r["response_id"] + "-grounding-0", "status": "valid", "judgment": ground()}])
+        judge.jsonl(self.args.run / "judgments.jsonl", outcomes)
+        judge.report(argparse.Namespace(run=self.args.run, human_labels=None, bootstrap=100, seed=42,
+            input_usd_per_million=None, output_usd_per_million=None, cached_input_usd_per_million=None))
+        summary = judge.read(self.args.run / "summary.json")
+        self.assertTrue(any("chart_type=line" in key for key in summary["groups"]))
+        self.assertFalse(any("chart_type=bar" in key for key in summary["groups"]))
+        self.assertEqual(summary["untruncated_sensitivity"]["all"]["eligible_records"], 3)
+        self.assertTrue(summary["small_sample_warnings"])
+
     def test_resume_submit_does_not_duplicate_paid_batches(self):
         manifest = self.prepare()
         calls = []
@@ -179,6 +250,205 @@ class JudgeTests(unittest.TestCase):
         new_chunks = new_manifest["chunks"][len(manifest["chunks"]):]
         self.assertEqual(sum(c["request_count"] for c in new_chunks), 1)
         self.assertEqual(judge.lines(self.run_dir / new_chunks[0]["path"])[0]["custom_id"], failed)
+
+    def test_policy_is_frozen_and_large_development_is_blocked(self):
+        manifest = self.prepare()
+        manifest["policy"]["thresholds"]["recall"] = .1
+        judge.save(self.run_dir / "manifest.json", manifest)
+        with self.assertRaisesRegex(ValueError, "protocol"):
+            judge.load_manifest(self.run_dir)
+        source = judge.read(self.source)
+        source["results"] = [{**source["results"][0], "example_id": str(i)} for i in range(26)]
+        judge.save(self.source, source)
+        self.args.run = self.root / "large"
+        with self.assertRaisesRegex(ValueError, "limited to 25"):
+            judge.prepare(self.args)
+        self.assertFalse(self.args.run.exists())
+
+    def test_holdout_excludes_entire_charts_and_requires_development(self):
+        self.args.chart_limit = 1
+        self.prepare()
+        development = self.run_dir
+        self.args.run = self.root / "validation"
+        self.args.stage = "validation"
+        with self.assertRaisesRegex(ValueError, "exclude-run"):
+            judge.prepare(self.args)
+        self.args.exclude_run = [development]
+        judge.prepare(self.args)
+        before = judge.lines(development / "records.jsonl")
+        after = judge.lines(self.args.run / "records.jsonl")
+        self.assertTrue({r["chart_id"] for r in before}.isdisjoint(r["chart_id"] for r in after))
+        self.assertEqual(len(after), 2)
+        self.assertEqual(judge.load_manifest(self.args.run)["stage"], "validation")
+
+    def test_evaluation_requires_a_passing_validation(self):
+        self.args.stage = "evaluation"
+        with self.assertRaisesRegex(ValueError, "validated-run"):
+            judge.prepare(self.args)
+
+    def test_validate_failure_writes_reasons_and_exits_nonzero(self):
+        self.prepare()
+        judge.jsonl(self.run_dir / "judgments.jsonl", [])
+        human_path = self.root / "unlabeled.jsonl"
+        judge.jsonl(human_path, [])
+        with self.assertRaises(SystemExit) as failure:
+            judge.validate(argparse.Namespace(run=self.run_dir, human_labels=human_path, bootstrap=100, seed=42))
+        self.assertEqual(failure.exception.code, 2)
+        self.assertEqual(judge.read(self.run_dir / "validation.json")["status"], "not_validated")
+
+    def test_matched_charts_cannot_have_different_questions(self):
+        other = judge.read(self.source)
+        other["model"] = "another-generator"
+        other["results"][0]["question"] = "A different question"
+        other_path = self.root / "other.json"
+        judge.save(other_path, other)
+        self.args.inputs.append(other_path)
+        with self.assertRaisesRegex(ValueError, "Question mismatch"):
+            judge.prepare(self.args)
+        self.assertFalse(self.run_dir.exists())
+
+    def test_missing_final_answer_is_a_failure_even_without_judge_output(self):
+        source = judge.read(self.source)
+        source["results"][0]["model_answer"] = ""
+        source["results"][0]["generation_truncated"] = True
+        judge.save(self.source, source)
+        manifest = self.prepare()
+        judge.jsonl(self.run_dir / "judgments.jsonl", [])
+        rows, _ = judge.joined(self.run_dir, manifest)
+        self.assertFalse(rows[0]["answer_correct"])
+        self.assertEqual(rows[0]["answer_verdict"], "missing")
+        self.assertIsNone(rows[0]["final_explanation_metrics"]["unsupported"])
+        self.assertEqual(judge.estimate(rows, "answer_accuracy", 100, 42)["denominator"], 1)
+
+    def test_corrected_trace_is_observed_but_not_retained_error(self):
+        record = {"final_explanation": "1", "returned_reasoning": "Value is 2. Correction: value is 1."}
+        judgment = ground()
+        trace = field("Value is 2.", "contradicted")
+        trace["claims"][0].update(resolution="explicitly_corrected", correction_quote="Correction: value is 1.")
+        trace["claims"].append(field("value is 1.")["claims"][0])
+        judgment["returned_reasoning"] = trace
+        judge.validate_judgment("grounding", judgment, record, judge.SCHEMAS)
+        metrics = judge.field_metrics(judgment, record, "returned_reasoning")
+        self.assertTrue(metrics["observed_contradicted"])
+        self.assertFalse(metrics["contradicted"])
+        self.assertEqual(metrics["corrected_claim_count"], 1)
+        self.assertEqual(metrics["claim_error_rate"], 0)
+        trace["claims"][0]["correction_quote"] = "a correction only in another field"
+        with self.assertRaisesRegex(ValueError, "same field"):
+            judge.validate_judgment("grounding", judgment, record, judge.SCHEMAS)
+
+    def test_verified_tables_apply_frozen_tolerance_without_trusting_judge_verdict(self):
+        from openai_judge_protocol import validate_chart_metadata
+        metadata = {"human_verified": True, "verified_table": {"provenance": "Manually checked source table",
+                     "values": [{"id": "series_a", "value": 10, "unit": "count"}]}}
+        validate_chart_metadata({"chart": metadata})
+        record = {"final_explanation": "12", "returned_reasoning": "", "chart_metadata": metadata,
+                  "numeric_tolerance": {"absolute": 1, "relative": 0}}
+        judgment = ground()
+        judgment["final_explanation"] = field("12")
+        judgment["final_explanation"]["claims"][0].update(numeric_reference="series_a", numeric_value=12)
+        judge.validate_judgment("grounding", judgment, record, judge.SCHEMAS)
+        self.assertTrue(judge.field_metrics(judgment, record, "final_explanation")["contradicted"])
+        record["numeric_tolerance"]["absolute"] = 2
+        self.assertFalse(judge.field_metrics(judgment, record, "final_explanation")["contradicted"])
+        metadata["human_verified"] = False
+        with self.assertRaisesRegex(ValueError, "human_verified"):
+            validate_chart_metadata({"chart": metadata})
+
+    def test_validation_gate_rejects_low_coverage_and_inadequate_human_evidence(self):
+        from openai_judge_protocol import DEFAULT_POLICY, validation_decision
+        policy = copy.deepcopy(DEFAULT_POLICY)
+        rows, labels = [], []
+        for i in range(20):
+            human = i % 2 == 0
+            row = {"response_id": str(i), "chart_id": str(i),
+                   "final_explanation_metrics": {"unsupported": human}, "answer_correct": human}
+            rows.append(row)
+            labels.extend({"response_id": str(i), "annotator": name,
+                           "final_explanation_unsupported": human, "answer_correct": human} for name in ["a", "b", "adjudicated"])
+        manifest = {"stage": "validation", "policy": policy}
+        result = validation_decision(manifest, rows, labels, judge.agreement_ci, 100, 42)
+        self.assertEqual(result["status"], "passed")
+        rows[0]["final_explanation_metrics"]["unsupported"] = None
+        rows[1]["final_explanation_metrics"]["unsupported"] = None
+        result = validation_decision(manifest, rows, labels, judge.agreement_ci, 100, 42)
+        self.assertEqual(result["status"], "not_validated")
+        self.assertIn("insufficient_human_and_judge_coverage", result["reasons"])
+        rows[0]["final_explanation_metrics"]["unsupported"] = True
+        rows[1]["final_explanation_metrics"]["unsupported"] = False
+        labels = [e for e in labels if e["annotator"] != "b"]
+        self.assertIn("insufficient_independent_human_overlap",
+                      validation_decision(manifest, rows, labels, judge.agreement_ci, 100, 42)["reasons"])
+
+    def test_verification_drafts_are_blinded_and_measured_separately(self):
+        source = judge.read(self.source)
+        source["results"][0].update(draft_model_answer="Final answer: 2", draft_model_reasoning="2")
+        judge.save(self.source, source)
+        manifest = self.prepare()
+        self.assertEqual(len(manifest["tasks"]), 10)
+        requests = [r for c in manifest["chunks"] for r in judge.lines(self.run_dir / c["path"])]
+        draft = next(r for r in requests if "-draft_grounding-" in r["custom_id"])
+        data = json.loads(draft["body"]["input"][0]["content"][0]["text"])
+        self.assertEqual(data["final_explanation"], "Final answer: 2")
+        self.assertNotIn("reference_answer", data)
+        self.assertNotIn("strategy", data)
+        self.assertNotIn("Final answer: 1", json.dumps(data))
+
+    def test_full_validation_promotion_and_protocol_drift(self):
+        source = judge.read(self.source)
+        source["results"] = []
+        for c in range(14):
+            (self.root / f"image{c}.png").write_bytes(f"chart-{c}".encode())
+            for strategy in ["direct", "structured"]:
+                source["results"].append({"example_id": str(c), "question": f"Question {c}",
+                    "correct_answer": "1", "image_path": f"image{c}.png", "prompt_strategy": strategy,
+                    "model_answer": f"Final answer: {1 if c % 2 == 0 else 2}",
+                    "model_reasoning": "", "generation_truncated": False})
+        judge.save(self.source, source)
+        self.args.chart_limit = 1
+        self.prepare()
+        development = self.run_dir
+        self.args.run = self.root / "validation"
+        self.args.stage = "validation"
+        self.args.exclude_run = [development]
+        self.args.chart_limit = 10
+        judge.prepare(self.args)
+        validation_run = self.args.run
+        manifest = judge.load_manifest(validation_run)
+        records = judge.lines(validation_run / "records.jsonl")
+        outcomes, humans = [], []
+        for r in records:
+            error = int(r["example_id"]) % 2 == 0
+            grounding = ground("contradicted" if error else "supported")
+            grounding["final_explanation"]["claims"][0]["quote"] = "1" if error else "2"
+            outcomes.extend([
+                {"custom_id": r["response_id"] + "-answer-0", "status": "valid", "judgment": {
+                    "extracted_answer": "1" if error else "2", "verdict": "correct" if error else "incorrect", "justification": "match check"}},
+                {"custom_id": r["response_id"] + "-grounding-0", "status": "valid",
+                 "judgment": grounding}])
+            humans.extend({"response_id": r["response_id"], "annotator": a, "answer_correct": error,
+                "final_explanation_unsupported": error} for a in ["a", "b", "adjudicated"])
+        judge.jsonl(validation_run / "judgments.jsonl", outcomes)
+        human_path = self.root / "human_labels.jsonl"
+        judge.jsonl(human_path, humans)
+        judge.validate(argparse.Namespace(run=validation_run, human_labels=human_path, bootstrap=100, seed=42))
+        self.assertEqual(judge.read(validation_run / "validation.json")["status"], "passed")
+        self.args.stage = "evaluation"
+        self.args.validated_run = validation_run
+        self.args.human_labels = human_path
+        self.args.chart_limit = None
+        self.args.run = self.root / "evaluation"
+        with patch.object(judge, "client", side_effect=AssertionError("Prepare must be offline")):
+            judge.prepare(self.args)
+        final = judge.lines(self.args.run / "records.jsonl")
+        self.assertEqual(len(final), 6)
+        self.assertTrue({r["chart_id"] for r in records}.isdisjoint(r["chart_id"] for r in final))
+        self.assertEqual(judge.load_manifest(self.args.run)["validation_evidence"]["decision"]["status"], "passed")
+        self.args.run = self.root / "changed-judge"
+        self.args.model = "a-different-judge"
+        with self.assertRaisesRegex(ValueError, "match the validated protocol"):
+            judge.prepare(self.args)
+        self.assertFalse(self.args.run.exists())
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 /outputs/eden_gemma4_e4b/images
+/outputs/eden_qwen3_5_9b/images
 /outputs/images/
 /outputs/judge/
 .env

@@ -9,7 +9,11 @@ rates, chart-clustered confidence intervals, paired comparisons, human agreement
 metrics when labels are supplied, and token-usage records. Preparation is local;
 only the explicit `submit` command sends paid requests. Install
 [requirements-judge.txt](requirements-judge.txt) and follow the small development
-batch example before scaling to all results.
+batch example before scaling to all results. Protocol v2 separates development,
+held-out human validation and evaluation; evaluation requires passing the frozen
+acceptance policy. It also distinguishes corrected trace claims, measures saved
+verification drafts, and reports truncation sensitivity and human-verified
+chart-type subgroups.
 
 ## Quick CharXiv run
 
