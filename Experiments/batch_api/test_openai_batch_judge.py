@@ -25,6 +25,11 @@ def ground(verdict="supported"):
                                    "requires_review": False, "review_reason": "", "claims": []}}
 
 
+def answer(verdict="correct", followed=None, reason="Saved generation prompt is unavailable."):
+    return {"extracted_answer": "1", "verdict": verdict, "justification": "Reference comparison.",
+            "strategy_followed": followed, "strategy_following_reason": reason}
+
+
 class JudgeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -93,7 +98,7 @@ class JudgeTests(unittest.TestCase):
         outputs = []
         failed_task = tasks[0]["custom_id"]
         for task in reversed(tasks):
-            j = {"extracted_answer": "1", "verdict": "correct", "justification": "matches"} if task["kind"] == "answer" else ground("contradicted")
+            j = answer() if task["kind"] == "answer" else ground("contradicted")
             body = {"model": "judge-snapshot", "status": "completed", "usage": {"input_tokens": 10, "output_tokens": 20},
                     "output": [{"type": "message", "content": [{"type": "output_text", "text": json.dumps(j)}]}]}
             if task["custom_id"] == failed_task:
@@ -143,7 +148,7 @@ class JudgeTests(unittest.TestCase):
         outcomes = []
         for record in records:
             for kind in ["answer", "grounding"]:
-                judgment = ({"extracted_answer": "1", "verdict": "correct", "justification": "matches"}
+                judgment = (answer()
                             if kind == "answer" else ground("contradicted"))
                 outcomes.append({"custom_id": record["response_id"] + f"-{kind}-0", "status": "valid", "judgment": judgment})
         judge.jsonl(self.run_dir / "judgments.jsonl", outcomes)
@@ -178,7 +183,7 @@ class JudgeTests(unittest.TestCase):
             correct = r["strategy"] == "direct"
             outcomes.extend([
                 {"custom_id": r["response_id"] + "-answer-0", "status": "valid", "judgment": {
-                    "extracted_answer": "1", "verdict": "correct" if correct else "incorrect", "justification": "fixture"}},
+                    **answer("correct" if correct else "incorrect")}},
                 {"custom_id": r["response_id"] + "-grounding-0", "status": "valid", "judgment": ground()}])
         judge.jsonl(self.run_dir / "judgments.jsonl", outcomes)
         rows, _ = judge.joined(self.run_dir, judge.load_manifest(self.run_dir))
@@ -210,7 +215,7 @@ class JudgeTests(unittest.TestCase):
         for r in records:
             outcomes.extend([
                 {"custom_id": r["response_id"] + "-answer-0", "status": "valid", "judgment": {
-                    "extracted_answer": "1", "verdict": "correct", "justification": "fixture"}},
+                    **answer()}},
                 {"custom_id": r["response_id"] + "-grounding-0", "status": "valid", "judgment": ground()}])
         judge.jsonl(self.args.run / "judgments.jsonl", outcomes)
         judge.report(argparse.Namespace(run=self.args.run, human_labels=None, bootstrap=100, seed=42,
@@ -320,6 +325,62 @@ class JudgeTests(unittest.TestCase):
         self.assertIsNone(rows[0]["final_explanation_metrics"]["unsupported"])
         self.assertEqual(judge.estimate(rows, "answer_accuracy", 100, 42)["denominator"], 1)
 
+    def test_strategy_check_reuses_answer_request_and_keeps_grounding_blind(self):
+        source = judge.read(self.source)
+        source["strategy_prompts"] = {s: "Finish with a line beginning 'Final answer:'." for s in ["direct", "structured"]}
+        source["results"][0]["system_prompt"] = "Actual per-response prompt: write Final answer:"
+        judge.save(self.source, source)
+        manifest = self.prepare()
+        requests = [r for c in manifest["chunks"] for r in judge.lines(self.run_dir / c["path"])]
+        answers = [r for r in requests if "-answer-" in r["custom_id"]]
+        self.assertEqual(len(requests), 8)
+        self.assertEqual(len(answers), 4)
+        self.assertNotIn("instruction_following", judge.SCHEMAS)
+        for r in requests:
+            data = json.loads(r["body"]["input"][0]["content"][0]["text"])
+            if "-grounding-" in r["custom_id"]:
+                self.assertNotIn("generation_system_prompt", data)
+            if "-answer-" in r["custom_id"]:
+                self.assertIn("generation_system_prompt", data)
+                self.assertIn("reference_answer", data)
+                self.assertNotIn("generator-secret", json.dumps(r["body"]))
+                self.assertEqual(len(r["body"]["input"][0]["content"]), 1)
+                self.assertTrue(r["body"]["text"]["format"]["strict"])
+                self.assertEqual(r["body"]["instructions"], judge.ANSWER_PROMPT)
+        self.assertTrue(any("Actual per-response prompt" in r["body"]["input"][0]["content"][0]["text"] for r in answers))
+
+    def test_strategy_fields_are_boolean_or_null_and_require_a_reason(self):
+        record = {"generation_system_prompt": "Write Final answer:", "final_explanation": "Final answer: 1", "returned_reasoning": ""}
+        for value in [True, False, None]:
+            judge.validate_judgment("answer", answer(followed=value, reason="Observed strategy requirements."), record, judge.SCHEMAS)
+        from jsonschema import ValidationError
+        with self.assertRaises(ValidationError):
+            judge.validate_judgment("answer", answer(followed="yes"), record, judge.SCHEMAS)
+        with self.assertRaisesRegex(ValueError, "short reason"):
+            judge.validate_judgment("answer", answer(followed=False, reason=""), record, judge.SCHEMAS)
+        record["generation_system_prompt"] = ""
+        with self.assertRaisesRegex(ValueError, "must be null"):
+            judge.validate_judgment("answer", answer(followed=True), record, judge.SCHEMAS)
+        judge.validate_judgment("answer", answer(), record, judge.SCHEMAS)
+
+    def test_adherence_and_factual_correctness_remain_separate(self):
+        source = judge.read(self.source)
+        source["results"][0]["system_prompt"] = "Write Final answer:"
+        judge.save(self.source, source)
+        manifest = self.prepare()
+        record = judge.lines(self.run_dir / "records.jsonl")[0]
+        outcomes = [
+            {"custom_id": record["response_id"] + "-answer-0", "status": "valid",
+             "judgment": answer("incorrect", True, "Required answer format is present.")}]
+        judge.jsonl(self.run_dir / "judgments.jsonl", outcomes)
+        rows, _ = judge.joined(self.run_dir, manifest)
+        metrics = judge.metric_values(rows[0])
+        self.assertFalse(metrics["answer_accuracy"])
+        self.assertTrue(metrics["strategy_following_rate"])
+        self.assertIsNone(rows[0]["final_explanation_metrics"]["unsupported"])
+        self.assertIsNone(rows[1]["strategy_followed"])
+        self.assertIsNone(judge.metric_values(rows[1])["strategy_following_rate"])
+
     def test_corrected_trace_is_observed_but_not_retained_error(self):
         record = {"final_explanation": "1", "returned_reasoning": "Value is 2. Correction: value is 1."}
         judgment = ground()
@@ -423,7 +484,7 @@ class JudgeTests(unittest.TestCase):
             grounding["final_explanation"]["claims"][0]["quote"] = "1" if error else "2"
             outcomes.extend([
                 {"custom_id": r["response_id"] + "-answer-0", "status": "valid", "judgment": {
-                    "extracted_answer": "1" if error else "2", "verdict": "correct" if error else "incorrect", "justification": "match check"}},
+                    **answer("correct" if error else "incorrect"), "extracted_answer": "1" if error else "2"}},
                 {"custom_id": r["response_id"] + "-grounding-0", "status": "valid",
                  "judgment": grounding}])
             humans.extend({"response_id": r["response_id"], "annotator": a, "answer_correct": error,

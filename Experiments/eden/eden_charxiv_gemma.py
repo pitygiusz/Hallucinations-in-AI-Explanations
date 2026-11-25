@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT = PROJECT_ROOT / "outputs" / "eden_gemma4_e4b" / "results.json"
 MODEL_ID = "google/gemma-4-E4B-it"  # Hugging Face instruction model, not the LM Studio alias.
 ATTENTION_IMPLEMENTATION = {"audio_config": "eager"}  # Other backbones retain SDPA.

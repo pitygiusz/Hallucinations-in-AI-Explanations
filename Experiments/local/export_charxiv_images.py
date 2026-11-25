@@ -23,7 +23,7 @@ from datasets import load_dataset
 from charxiv_pipeline import _image_bytes
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def project_path(value: Path) -> Path:

@@ -1,21 +1,37 @@
-# CharXiv: blinded OpenAI Batch judge, protocol v2
+# CharXiv: blinded OpenAI Batch judge, protocol v4
 
-## What the two judges output
+## What the judges output
 
 These are **two separate requests to the same judge model**, each returning
-strict, schema-validated JSON.
+strict, schema-validated JSON. Judge 1 checks answer correctness and strategy
+adherence; Judge 2 checks grounding and does not receive the strategy prompt.
+Use a new run directory for protocol v4; previously prepared requests retain
+their original schemas.
 
 Examples below are illustrative; the rows do not form a single judgment.
 
-### Judge 1 — Answer correctness
+### Judge 1 — Answer correctness and strategy adherence
 
-**Inputs:** question, reference answer, final response.
+**Inputs:** question, reference answer, final response, and the exact saved
+generation system prompt.
 
 | Field | Meaning | Possible values | Example |
 | --- | --- | --- | --- |
 | `extracted_answer` | Exact answer text copied from the response. | String; may be empty for a missing or ambiguous answer. | `"1905"` |
 | `verdict` | Whether the final answer matches the reference. | `correct`, `incorrect`, `missing`, `ambiguous` | `"correct"` |
 | `justification` | Why the answer matches or differs from the reference. | String | `"The response and reference both give 1905."` |
+| `strategy_followed` | Did the final response follow the saved prompt's observable strategy requirements? Independent of answer correctness. | `true` = followed; `false` = a required part is missing or violated, including partial compliance; `null` = cannot determine or saved prompt is missing. | `false` when the structured prompt requires a `Chart evidence:` section but it is missing. |
+| `strategy_following_reason` | Short explanation of compliance, a missing requirement, or why it cannot be assessed. | Nonempty string | `"No Chart evidence section before the explanation."` |
+
+The saved prompt determines the requirements: a brief explanation and
+`Final answer:` line for direct prompts, evidence before explanation for
+structured prompts, steps and relevant arithmetic for chain-of-thought, or
+visible `Checks:` for verification. A wrong answer can follow its strategy and
+a correct answer can violate it. This checks observable response behavior,
+not factual grounding or internal verification. No extra API request is needed.
+Python reports `strategy_following_rate` and `strategy_following_coverage`,
+grouped by model and strategy; `null` judgments are excluded from the rate
+denominator and remain visible in coverage.
 
 ### Judge 2 — Chart grounding
 
@@ -53,7 +69,7 @@ numerical tolerance, and optional verified source table. **No reference answer.*
 | `numeric_reference` | ID of a verified source-table cell directly comparable to the numerical claim. | A cell-ID string from the supplied verified table, or `""` when not applicable. | `"series_a_year_2020"` |
 | `numeric_value` | The numerical value claimed for that referenced cell, in the same unit. | Number when mapped to a verified cell; otherwise `null`. | `9` |
 
-**Python combines the two judgments by response ID:** a correct final answer
+**Python combines the answer and grounding judgments by response ID:** a correct final answer
 plus a retained material error identifies a correct answer with flawed
 explanation or reasoning.
 
@@ -66,6 +82,25 @@ explanation or reasoning.
   The reasoning counterpart is `correct_answer_returned_reasoning_unsupported`.
   Judge outputs are saved in `judgments.jsonl`; Python calculates the rates and
   confidence intervals in `summary.json` and `metrics.csv`.
+
+## Chosen prompting strategies
+
+We compare four strategies on the same chart–question pairs for each model:
+
+| Strategy | What the prompt requests | Purpose | Generation calls per response |
+| --- | --- | --- | ---: |
+| `direct` | A brief chart-based explanation and final answer. | Provides a baseline. | 1 |
+| `structured` | List relevant chart evidence, then explain the answer. | Tests whether explicit evidence collection improves grounding. | 1 |
+| `chain_of_thought` | Explain the chart-reading steps and show arithmetic. | Tests whether detailed explanations improve reliability or introduce additional unsupported claims. | 1 |
+| `verification` | Generate a draft, then ask the same model to recheck its claims against the chart and revise it. | Tests whether self-verification removes errors or introduces new ones. | 2 |
+
+All share the same chart-grounding rules and final-answer format. We compare
+answer accuracy, explanation errors, claim-level rates and available token/time
+usage without assuming that greater detail or self-verification improves results.
+The grounding judge is not told which strategy generated a response; the answer
+judge receives the saved prompt to assess adherence. Exact prompts are
+defined in [the Gemma experiment](../eden/eden_charxiv_gemma.py) and
+[the Qwen experiment](../eden/eden_charxiv_qwen.py).
 
 ## Workflow reference
 
@@ -107,7 +142,7 @@ calls. Source JSON files are never modified, and relative image paths are
 resolved against each source JSON's directory.
 
 ```bash
-python Experiments/openai_batch_judge.py prepare \
+python Experiments/batch_api/openai_batch_judge.py prepare \
   outputs/eden_gemma4_e4b/results.json \
   outputs/eden_qwen3_5_9b/results.json \
   --run outputs/judge/development --chart-limit 2
@@ -117,10 +152,10 @@ Inspect the frozen `manifest.json` and request JSONL files. To submit, check,
 download and summarize:
 
 ```bash
-python Experiments/openai_batch_judge.py submit --run outputs/judge/development
-python Experiments/openai_batch_judge.py status --run outputs/judge/development
-python Experiments/openai_batch_judge.py collect --run outputs/judge/development
-python Experiments/openai_batch_judge.py report --run outputs/judge/development
+python Experiments/batch_api/openai_batch_judge.py submit --run outputs/judge/development
+python Experiments/batch_api/openai_batch_judge.py status --run outputs/judge/development
+python Experiments/batch_api/openai_batch_judge.py collect --run outputs/judge/development
+python Experiments/batch_api/openai_batch_judge.py report --run outputs/judge/development
 ```
 
 `submit` sends paid requests. It submits all prepared shards; account queued-token
@@ -135,7 +170,7 @@ it **before** preparing validation. The defaults are design choices, not a
 published universal standard or an empirical finding:
 
 ```bash
-python Experiments/openai_batch_judge.py policy --output outputs/judge/policy.json
+python Experiments/batch_api/openai_batch_judge.py policy --output outputs/judge/policy.json
 ```
 
 | Acceptance criterion | Proposed default |
@@ -161,10 +196,10 @@ outputs from one chart in the same stage. Annotate both development and held-out
 responses, but only held-out labels determine acceptance:
 
 ```bash
-python Experiments/openai_batch_judge.py prepare \
+python Experiments/batch_api/openai_batch_judge.py prepare \
   outputs/eden_gemma4_e4b/results.json \
   outputs/eden_qwen3_5_9b/results.json \
-  --run outputs/judge/validation_v2 --stage validation --chart-limit 23 \
+  --run outputs/judge/validation_v4 --stage validation --chart-limit 23 \
   --exclude-run outputs/judge/development --policy outputs/judge/policy.json
 ```
 
@@ -174,8 +209,8 @@ their completed JSONL files into one validation labels file, preserving each
 annotator identity and the separate `adjudicated` records. Evaluate locally:
 
 ```bash
-python Experiments/openai_batch_judge.py validate \
-  --run outputs/judge/validation_v2 \
+python Experiments/batch_api/openai_batch_judge.py validate \
+  --run outputs/judge/validation_v4 \
   --human-labels outputs/judge/validation_labels.jsonl
 ```
 
@@ -191,14 +226,14 @@ the team must document those facts.
 Only after validation passes, prepare the full comparison in a NEW run directory:
 
 ```bash
-python Experiments/openai_batch_judge.py prepare \
+python Experiments/batch_api/openai_batch_judge.py prepare \
   outputs/eden_gemma4_e4b/results.json \
   outputs/eden_qwen3_5_9b/results.json \
-  --run outputs/judge/comparison_v2 --stage evaluation \
-  --validated-run outputs/judge/validation_v2 \
+  --run outputs/judge/comparison_v4 --stage evaluation \
+  --validated-run outputs/judge/validation_v4 \
   --human-labels outputs/judge/validation_labels.jsonl \
   --policy outputs/judge/policy.json
-python Experiments/openai_batch_judge.py submit --run outputs/judge/comparison_v2
+python Experiments/batch_api/openai_batch_judge.py submit --run outputs/judge/comparison_v4
 ```
 
 Model comparisons are produced when both are present. Evaluation preparation
@@ -226,12 +261,17 @@ versions separately, for example with `python -m pip freeze` in the run director
 ### Answer judgment
 
 Text-only inputs: question, reference answer, candidate final-answer/explanation
-field. Labels: `correct`, `incorrect`, `missing`, `ambiguous`. The extracted
+field, and saved generation system prompt. Labels: `correct`, `incorrect`,
+`missing`, `ambiguous`. The extracted
 answer must be a verbatim substring. No answer is inferred from the separate
 returned reasoning. Equivalent notation/paraphrases are accepted; additional
 incorrect alternatives are not. Missing answers count as accuracy failures;
 ambiguous or failed judgments are unresolved. This is semantic judge scoring,
 not an implementation of the official CharXiv scoring protocol.
+The same response also returns `strategy_followed` and
+`strategy_following_reason`; these do not change the correctness verdict.
+Saved verification drafts use their own saved draft prompt, rather than the
+final verification prompt. A missing prompt requires `strategy_followed: null`.
 
 ### Grounding judgment
 
@@ -434,6 +474,13 @@ directory and use opaque chart filenames to avoid revealing the generating
 model through source-directory names. Keep the answer packet hidden until the
 grounding annotation is complete.
 
+The answer annotation packet includes the saved prompt for adherence checks.
+Review it after grounding so strategy instructions do not bias the grounding
+labels. The optional human label `strategy_followed` is `true` when all applicable observable requirements are
+met, `false` for partial or failed adherence, and `null` when unassessable. Human
+agreement for this label is reported separately; it does not extend the primary
+answer/grounding acceptance gate to certify adherence labels.
+
 Response-label fields are
 `true`, `false`, or `null` (not assessed/uncertain). Copy the template before editing.
 
@@ -457,8 +504,8 @@ claim annotation without pretending that automated claim segmentation itself
 has been validated. Keep the inventories alongside the original human labels.
 
 ```bash
-python Experiments/openai_batch_judge.py report \
-  --run outputs/judge/validation_v2 \
+python Experiments/batch_api/openai_batch_judge.py report \
+  --run outputs/judge/validation_v4 \
   --human-labels outputs/judge/validation_labels.jsonl
 ```
 
@@ -512,7 +559,7 @@ revision; the script cannot establish them.
 Run the offline regression suite from the project root:
 
 ```bash
-python -m unittest discover -s Experiments -p test_openai_batch_judge.py
+python -m unittest discover -s Experiments/batch_api -p test_openai_batch_judge.py
 ```
 
 Tests use synthetic local judgments and mocked API clients. Passing tests means
@@ -531,8 +578,8 @@ They differ from the 1,536-token generation cap used in the experiment.
 After terminal batches have been collected:
 
 ```bash
-python Experiments/openai_batch_judge.py retry --run outputs/judge/comparison_v2
-python Experiments/openai_batch_judge.py submit --run outputs/judge/comparison_v2
+python Experiments/batch_api/openai_batch_judge.py retry --run outputs/judge/comparison_v4
+python Experiments/batch_api/openai_batch_judge.py submit --run outputs/judge/comparison_v4
 ```
 
 Retries preserve the original requests and protocol. They cost extra. If a batch
@@ -541,7 +588,7 @@ blocked to avoid duplicate paid work. Check the API dashboard for the matching
 uploaded input file and attach its batch ID:
 
 ```bash
-python Experiments/openai_batch_judge.py attach --run outputs/judge/comparison_v2 \
+python Experiments/batch_api/openai_batch_judge.py attach --run outputs/judge/comparison_v4 \
   --chunk 0 --batch-id batch_REPLACE_WITH_ACTUAL_ID
 ```
 
@@ -560,7 +607,7 @@ these example rates correspond to the Sol documentation checked on 18 November
 2026 and must be rechecked before use:
 
 ```bash
-python Experiments/openai_batch_judge.py report --run outputs/judge/comparison_v2 \
+python Experiments/batch_api/openai_batch_judge.py report --run outputs/judge/comparison_v4 \
   --input-usd-per-million 1 --output-usd-per-million 5 \
   --cached-input-usd-per-million 0.05
 ```
@@ -572,7 +619,7 @@ is null; token usage remains available.
 Do not estimate cost from the displayed answer length. Check current API prices
 and measure the small development batch before scaling. No requests are silently
 truncated to lower cost. Prepared image data, downloaded results and secrets are
-excluded by the judge output and environment-file rules in [.gitignore](../.gitignore).
+excluded by the judge output and environment-file rules in [.gitignore](../../.gitignore).
 
 Official references:
 

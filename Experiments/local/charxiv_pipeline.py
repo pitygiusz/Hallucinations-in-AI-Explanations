@@ -24,7 +24,7 @@ DATASET_ID = "princeton-nlp/CharXiv"
 DEFAULT_SEED = 42
 DEFAULT_N = 25
 DEFAULT_API_URL = "http://localhost:1234/api/v1/chat"
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "outputs" / "charxiv_lm_studio_answers.json"
 def _text(value: Any) -> str:
     if isinstance(value, (list, tuple)):

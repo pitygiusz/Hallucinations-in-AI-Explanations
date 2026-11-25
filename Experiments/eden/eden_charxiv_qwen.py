@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT = PROJECT_ROOT / "outputs" / "eden_qwen3_5_9b" / "results.json"
 MODEL_ID = "Qwen/Qwen3.5-9B"  # Official Hugging Face checkpoint, not the LM Studio Q4 alias.
 ATTENTION_IMPLEMENTATION = "sdpa"
