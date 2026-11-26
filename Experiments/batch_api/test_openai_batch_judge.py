@@ -8,7 +8,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import openai_batch_judge as judge
+import judge_common as judge
+import judge_schema_legacy as legacy
+import openai_batch_judge as openai
 
 
 def field(quote="1", verdict="supported", review=False):
@@ -19,15 +21,29 @@ def field(quote="1", verdict="supported", review=False):
             "resolution": "retained", "correction_quote": "", "numeric_reference": "", "numeric_value": None}]}
 
 
-def ground(verdict="supported"):
+def legacy_ground(verdict="supported"):
     return {"chart_readability": "readable", "chart_types": ["bar"], "final_explanation": field(verdict=verdict),
             "returned_reasoning": {"applicable": False, "coverage_complete": True,
                                    "requires_review": False, "review_reason": "", "claims": []}}
 
 
-def answer(verdict="correct", followed=None, reason="Saved generation prompt is unavailable."):
-    return {"extracted_answer": "1", "verdict": verdict, "justification": "Reference comparison.",
-            "strategy_followed": followed, "strategy_following_reason": reason}
+def compact_field(verdict="supported", status="assessed"):
+    error = status == "assessed" and verdict != "supported"
+    contradiction = error and verdict == "contradicted"
+    return {"status": status, "total_claims": int(status == "assessed"), "corrected_claims": 0,
+            "contradicted_claims": int(contradiction), "unsupported_claims": int(error and not contradiction),
+            "material_errors": int(error), "material_contradictions": int(contradiction),
+            "error_categories": ["chart_reading"] if error else []}
+
+
+def ground(verdict="supported"):
+    return {"chart_readability": "readable", "chart_types": ["bar"],
+            "final_explanation": compact_field(verdict), "returned_reasoning": compact_field(status="absent")}
+
+
+def answer(verdict="correct", followed=None, reason=""):
+    return {"verdict": verdict, "strategy_followed": followed,
+            "review_required": verdict == "ambiguous" or followed is None}
 
 
 class JudgeTests(unittest.TestCase):
@@ -50,7 +66,7 @@ class JudgeTests(unittest.TestCase):
             answer_tokens=2048, grounding_tokens=12000, chart_limit=None)
 
     def prepare(self):
-        judge.prepare(self.args)
+        openai.prepare(self.args)
         return judge.load_manifest(self.run_dir)
 
     def test_blinding_identity_sharding_and_frozen_protocol(self):
@@ -77,16 +93,18 @@ class JudgeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protocol"):
             judge.load_manifest(self.run_dir)
 
-    def test_quotes_coverage_and_unknowns_are_not_clean(self):
+    def test_counts_coverage_and_unknowns_are_not_clean(self):
         record = {"final_explanation": "Final answer: 1", "returned_reasoning": ""}
         judge.validate_judgment("grounding", ground(), record, judge.SCHEMAS)
-        bad = ground()
-        bad["final_explanation"]["claims"][0]["quote"] = "invented quote"
-        with self.assertRaisesRegex(ValueError, "verbatim"):
+        bad = ground("contradicted")
+        bad["final_explanation"]["contradicted_claims"] = 2
+        with self.assertRaisesRegex(ValueError, "retained inventory"):
             judge.validate_judgment("grounding", bad, record, judge.SCHEMAS)
         self.assertIsNone(judge.field_metrics(None, record, "final_explanation")["unsupported"])
         uncertain = ground()
-        uncertain["final_explanation"]["coverage_complete"] = False
+        uncertain["final_explanation"] = {k: "requires_review" if k == "status" else None
+                                          for k in uncertain["final_explanation"]}
+        judge.validate_judgment("grounding", uncertain, record, judge.SCHEMAS)
         self.assertIsNone(judge.field_metrics(uncertain, record, "final_explanation")["unsupported"])
         self.assertTrue(judge.field_metrics(ground("insufficient_evidence"), record, "final_explanation")["unsupported"])
         self.assertFalse(judge.field_metrics(ground("insufficient_evidence"), record, "final_explanation")["contradicted"])
@@ -113,8 +131,8 @@ class JudgeTests(unittest.TestCase):
         batch = SimpleNamespace(id="batch_fake", status="completed", output_file_id="file_fake", error_file_id=None,
                                 model_dump=lambda **kwargs: {"status": "completed"})
         api = SimpleNamespace(batches=SimpleNamespace(retrieve=lambda _: batch))
-        with patch.object(judge, "client", return_value=api):
-            judge.collect(argparse.Namespace(run=self.run_dir))
+        with patch.object(openai, "client", return_value=api):
+            openai.collect(argparse.Namespace(run=self.run_dir))
         labels = {r["custom_id"]: r for r in judge.lines(self.run_dir / "judgments.jsonl")}
         self.assertEqual(labels[failed_task]["status"], "invalid")
         rows, _ = judge.joined(self.run_dir, manifest)
@@ -209,7 +227,7 @@ class JudgeTests(unittest.TestCase):
         source["results"][0]["generation_truncated"] = None
         judge.save(self.source, source)
         self.args.run = self.root / "unknown-truncation"
-        judge.prepare(self.args)
+        openai.prepare(self.args)
         records = judge.lines(self.args.run / "records.jsonl")
         outcomes = []
         for r in records:
@@ -234,9 +252,9 @@ class JudgeTests(unittest.TestCase):
             return SimpleNamespace(id=f"batch_{len(calls)}")
         api = SimpleNamespace(files=SimpleNamespace(create=lambda **kwargs: SimpleNamespace(id="file_uploaded")),
                               batches=SimpleNamespace(create=create))
-        with patch.object(judge, "client", return_value=api):
-            judge.submit(argparse.Namespace(run=self.run_dir))
-            judge.submit(argparse.Namespace(run=self.run_dir))
+        with patch.object(openai, "client", return_value=api):
+            openai.submit(argparse.Namespace(run=self.run_dir))
+            openai.submit(argparse.Namespace(run=self.run_dir))
         self.assertEqual(len(calls), len(manifest["chunks"]))
         self.assertTrue(all(c["completion_window"] == "24h" for c in calls))
 
@@ -249,8 +267,8 @@ class JudgeTests(unittest.TestCase):
         judge.jsonl(self.run_dir / "judgments.jsonl", [
             {"custom_id": t["custom_id"], "status": "invalid" if t["custom_id"] == failed else "valid"}
             for t in manifest["tasks"]])
-        with patch.object(judge, "client", side_effect=AssertionError("Retry must not call API")):
-            judge.retry(argparse.Namespace(run=self.run_dir))
+        with patch.object(openai, "client", side_effect=AssertionError("Retry must not call API")):
+            openai.retry(argparse.Namespace(run=self.run_dir))
         new_manifest = judge.load_manifest(self.run_dir)
         new_chunks = new_manifest["chunks"][len(manifest["chunks"]):]
         self.assertEqual(sum(c["request_count"] for c in new_chunks), 1)
@@ -267,7 +285,7 @@ class JudgeTests(unittest.TestCase):
         judge.save(self.source, source)
         self.args.run = self.root / "large"
         with self.assertRaisesRegex(ValueError, "limited to 25"):
-            judge.prepare(self.args)
+            openai.prepare(self.args)
         self.assertFalse(self.args.run.exists())
 
     def test_holdout_excludes_entire_charts_and_requires_development(self):
@@ -277,9 +295,9 @@ class JudgeTests(unittest.TestCase):
         self.args.run = self.root / "validation"
         self.args.stage = "validation"
         with self.assertRaisesRegex(ValueError, "exclude-run"):
-            judge.prepare(self.args)
+            openai.prepare(self.args)
         self.args.exclude_run = [development]
-        judge.prepare(self.args)
+        openai.prepare(self.args)
         before = judge.lines(development / "records.jsonl")
         after = judge.lines(self.args.run / "records.jsonl")
         self.assertTrue({r["chart_id"] for r in before}.isdisjoint(r["chart_id"] for r in after))
@@ -289,7 +307,7 @@ class JudgeTests(unittest.TestCase):
     def test_evaluation_requires_a_passing_validation(self):
         self.args.stage = "evaluation"
         with self.assertRaisesRegex(ValueError, "validated-run"):
-            judge.prepare(self.args)
+            openai.prepare(self.args)
 
     def test_validate_failure_writes_reasons_and_exits_nonzero(self):
         self.prepare()
@@ -309,7 +327,7 @@ class JudgeTests(unittest.TestCase):
         judge.save(other_path, other)
         self.args.inputs.append(other_path)
         with self.assertRaisesRegex(ValueError, "Question mismatch"):
-            judge.prepare(self.args)
+            openai.prepare(self.args)
         self.assertFalse(self.run_dir.exists())
 
     def test_missing_final_answer_is_a_failure_even_without_judge_output(self):
@@ -349,15 +367,15 @@ class JudgeTests(unittest.TestCase):
                 self.assertEqual(r["body"]["instructions"], judge.ANSWER_PROMPT)
         self.assertTrue(any("Actual per-response prompt" in r["body"]["input"][0]["content"][0]["text"] for r in answers))
 
-    def test_strategy_fields_are_boolean_or_null_and_require_a_reason(self):
+    def test_strategy_fields_are_boolean_or_null_and_require_review(self):
         record = {"generation_system_prompt": "Write Final answer:", "final_explanation": "Final answer: 1", "returned_reasoning": ""}
         for value in [True, False, None]:
             judge.validate_judgment("answer", answer(followed=value, reason="Observed strategy requirements."), record, judge.SCHEMAS)
         from jsonschema import ValidationError
         with self.assertRaises(ValidationError):
             judge.validate_judgment("answer", answer(followed="yes"), record, judge.SCHEMAS)
-        with self.assertRaisesRegex(ValueError, "short reason"):
-            judge.validate_judgment("answer", answer(followed=False, reason=""), record, judge.SCHEMAS)
+        with self.assertRaisesRegex(ValueError, "requires review"):
+            judge.validate_judgment("answer", {**answer(), "review_required": False}, record, judge.SCHEMAS)
         record["generation_system_prompt"] = ""
         with self.assertRaisesRegex(ValueError, "must be null"):
             judge.validate_judgment("answer", answer(followed=True), record, judge.SCHEMAS)
@@ -383,12 +401,12 @@ class JudgeTests(unittest.TestCase):
 
     def test_corrected_trace_is_observed_but_not_retained_error(self):
         record = {"final_explanation": "1", "returned_reasoning": "Value is 2. Correction: value is 1."}
-        judgment = ground()
+        judgment = legacy_ground()
         trace = field("Value is 2.", "contradicted")
         trace["claims"][0].update(resolution="explicitly_corrected", correction_quote="Correction: value is 1.")
         trace["claims"].append(field("value is 1.")["claims"][0])
         judgment["returned_reasoning"] = trace
-        judge.validate_judgment("grounding", judgment, record, judge.SCHEMAS)
+        judge.validate_judgment("grounding", judgment, record, legacy.SCHEMAS)
         metrics = judge.field_metrics(judgment, record, "returned_reasoning")
         self.assertTrue(metrics["observed_contradicted"])
         self.assertFalse(metrics["contradicted"])
@@ -396,19 +414,19 @@ class JudgeTests(unittest.TestCase):
         self.assertEqual(metrics["claim_error_rate"], 0)
         trace["claims"][0]["correction_quote"] = "a correction only in another field"
         with self.assertRaisesRegex(ValueError, "same field"):
-            judge.validate_judgment("grounding", judgment, record, judge.SCHEMAS)
+            judge.validate_judgment("grounding", judgment, record, legacy.SCHEMAS)
 
     def test_verified_tables_apply_frozen_tolerance_without_trusting_judge_verdict(self):
-        from openai_judge_protocol import validate_chart_metadata
+        from judge_policy import validate_chart_metadata
         metadata = {"human_verified": True, "verified_table": {"provenance": "Manually checked source table",
                      "values": [{"id": "series_a", "value": 10, "unit": "count"}]}}
         validate_chart_metadata({"chart": metadata})
         record = {"final_explanation": "12", "returned_reasoning": "", "chart_metadata": metadata,
                   "numeric_tolerance": {"absolute": 1, "relative": 0}}
-        judgment = ground()
+        judgment = legacy_ground()
         judgment["final_explanation"] = field("12")
         judgment["final_explanation"]["claims"][0].update(numeric_reference="series_a", numeric_value=12)
-        judge.validate_judgment("grounding", judgment, record, judge.SCHEMAS)
+        judge.validate_judgment("grounding", judgment, record, legacy.SCHEMAS)
         self.assertTrue(judge.field_metrics(judgment, record, "final_explanation")["contradicted"])
         record["numeric_tolerance"]["absolute"] = 2
         self.assertFalse(judge.field_metrics(judgment, record, "final_explanation")["contradicted"])
@@ -417,7 +435,7 @@ class JudgeTests(unittest.TestCase):
             validate_chart_metadata({"chart": metadata})
 
     def test_validation_gate_rejects_low_coverage_and_inadequate_human_evidence(self):
-        from openai_judge_protocol import DEFAULT_POLICY, validation_decision
+        from judge_policy import DEFAULT_POLICY, validation_decision
         policy = copy.deepcopy(DEFAULT_POLICY)
         rows, labels = [], []
         for i in range(20):
@@ -473,7 +491,7 @@ class JudgeTests(unittest.TestCase):
         self.args.stage = "validation"
         self.args.exclude_run = [development]
         self.args.chart_limit = 10
-        judge.prepare(self.args)
+        openai.prepare(self.args)
         validation_run = self.args.run
         manifest = judge.load_manifest(validation_run)
         records = judge.lines(validation_run / "records.jsonl")
@@ -481,10 +499,9 @@ class JudgeTests(unittest.TestCase):
         for r in records:
             error = int(r["example_id"]) % 2 == 0
             grounding = ground("contradicted" if error else "supported")
-            grounding["final_explanation"]["claims"][0]["quote"] = "1" if error else "2"
             outcomes.extend([
                 {"custom_id": r["response_id"] + "-answer-0", "status": "valid", "judgment": {
-                    **answer("correct" if error else "incorrect"), "extracted_answer": "1" if error else "2"}},
+                    **answer("correct" if error else "incorrect")}},
                 {"custom_id": r["response_id"] + "-grounding-0", "status": "valid",
                  "judgment": grounding}])
             humans.extend({"response_id": r["response_id"], "annotator": a, "answer_correct": error,
@@ -499,8 +516,8 @@ class JudgeTests(unittest.TestCase):
         self.args.human_labels = human_path
         self.args.chart_limit = None
         self.args.run = self.root / "evaluation"
-        with patch.object(judge, "client", side_effect=AssertionError("Prepare must be offline")):
-            judge.prepare(self.args)
+        with patch.object(openai, "client", side_effect=AssertionError("Prepare must be offline")):
+            openai.prepare(self.args)
         final = judge.lines(self.args.run / "records.jsonl")
         self.assertEqual(len(final), 6)
         self.assertTrue({r["chart_id"] for r in records}.isdisjoint(r["chart_id"] for r in final))
@@ -508,7 +525,7 @@ class JudgeTests(unittest.TestCase):
         self.args.run = self.root / "changed-judge"
         self.args.model = "a-different-judge"
         with self.assertRaisesRegex(ValueError, "match the validated protocol"):
-            judge.prepare(self.args)
+            openai.prepare(self.args)
         self.assertFalse(self.args.run.exists())
 
 

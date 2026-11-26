@@ -48,7 +48,7 @@ explanations or verification necessarily improve reliability.
 | --- | --- |
 | [Experiments/local/](Experiments/local/) | LM Studio pipelines, local notebooks, and the chart-image exporter. |
 | [Experiments/eden/](Experiments/eden/) | Standalone Gemma and Qwen generation scripts for Eden / CUDA. |
-| [Experiments/batch_api/](Experiments/batch_api/) | Batch evaluation scripts, judge protocol, workflow guide, and offline tests. |
+| [Experiments/batch_api/](Experiments/batch_api/) | Shared judge schema, OpenAI Batch and Google AI Studio runners, workflow guide, and offline tests. |
 | [Phase1/](Phase1/) | Project brief, literature and dataset notes, requirements, feedback, and Q&A. |
 | [Phase2/](Phase2/) | Presentation PDFs, presentation scripts, and the pilot-analysis PDF. |
 | [rules/](rules/) | Course rules, assessment criteria, reproducibility checklist, and editorial guidance. |
@@ -64,7 +64,7 @@ there is no package-install step such as `pip install -e .`.
 | --- | --- | --- | --- |
 | Local chart generation | [requirements.txt](requirements.txt) | A vision-capable model loaded in LM Studio and its local server running. | [run_charxiv_pipeline.py](Experiments/local/run_charxiv_pipeline.py) or [run_charxiv_prompt_strategies.py](Experiments/local/run_charxiv_prompt_strategies.py) |
 | Eden / CUDA generation | [requirements-eden.txt](requirements-eden.txt), which includes the base requirements | A CUDA GPU for inference; Hugging Face access or a prepared shared cache. | [eden_charxiv_gemma.py](Experiments/eden/eden_charxiv_gemma.py) or [eden_charxiv_qwen.py](Experiments/eden/eden_charxiv_qwen.py) |
-| Batch judging and offline analysis | [requirements-judge.txt](requirements-judge.txt) | Saved result JSON and its chart images. API commands also need `OPENAI_API_KEY`; preparation, reporting, validation, and tests are local. | [openai_batch_judge.py](Experiments/batch_api/openai_batch_judge.py) |
+| Batch judging and offline analysis | [requirements-judge.txt](requirements-judge.txt) | Saved result JSON and chart images; the matching provider's API key for network commands. | [OpenAI Batch](Experiments/batch_api/openai_batch_judge.py) or [Gemini Batch](Experiments/batch_api/google_ai_studio_judge.py), both using [judge_schema.py](Experiments/batch_api/judge_schema.py) |
 
 The judge dependencies are separate from the generation dependencies; install
 both requirement files if using both workflows in one environment. The notebooks
@@ -131,23 +131,64 @@ revision, seed and generation settings when comparing runs. If compute nodes
 lack internet access, run `--prepare-only` on the login host first, then add
 `--offline` to the GPU job. Set `HF_TOKEN` if model access requires it.
 
-### OpenAI Batch judging
+To generate a fresh batch without repeating previously generated charts, add
+`--exclude-from` pointing to an earlier Eden results JSON and choose a new output:
+
+```bash
+python Experiments/eden/eden_charxiv_gemma.py --n 125 --seed 20261126 \
+  --exclude-from outputs/eden_gemma4_e4b/results.json \
+  --output outputs/eden_gemma4_e4b_batch2/results.json
+```
+
+Use this command inside your GPU allocation or as the Slurm `--wrap` command.
+For Qwen, use its script and a separate Qwen output directory, keeping the same
+seed, sample size, dataset revision and exclusion files to select matching charts.
+Repeat `--exclude-from` for multiple earlier batches. Both scripts exclude chart
+IDs present in the source files' `results` entries, including any partially
+completed chart, but not charts with no saved response yet. Exclusions are saved
+in the new checkpoint; `--resume` restores them without needing the source files.
+Supplying exclusion files again on resume must produce the same excluded IDs.
+Without `--exclude-from`, sampling is unchanged.
+
+### API judging
+
+Fill in the repository-root `.env` with your API keys and model IDs. For a fresh
+clone, copy [.env.example](.env.example) to `.env` first. Both runners load it
+automatically; shell environment variables take precedence, and `--model`
+overrides the configured model ID. The local `.env` is excluded from Git.
 
 ```bash
 python -m pip install -r requirements-judge.txt
 python Experiments/batch_api/openai_batch_judge.py prepare \
   outputs/eden_gemma4_e4b/results.json \
-  --run outputs/judge/development --chart-limit 2
+  --run outputs/judge/openai_development_v6 --chart-limit 2
 ```
 
-Preparation is local. Follow the [judge workflow and output schemas](Experiments/batch_api/openai_batch_judge.md)
-for submission, human validation and evaluation. API commands require
-`OPENAI_API_KEY`; `submit` sends paid requests. Use a new directory for each run.
+Preparation is local. OpenAI uses `OPENAI_API_KEY`; `submit` sends paid Batch
+requests. For Gemini Batch, configure `GOOGLE_API_KEY` and `GOOGLE_MODEL_ID`,
+install the updated requirements (including `google-genai`), then run:
+
+```bash
+python Experiments/batch_api/google_ai_studio_judge.py prepare \
+  outputs/eden_gemma4_e4b/results.json \
+  --run outputs/judge/gemini_batch_10 --chart-limit 10
+python Experiments/batch_api/google_ai_studio_judge.py submit --run outputs/judge/gemini_batch_10
+python Experiments/batch_api/google_ai_studio_judge.py status --run outputs/judge/gemini_batch_10
+python Experiments/batch_api/google_ai_studio_judge.py collect --run outputs/judge/gemini_batch_10
+python Experiments/batch_api/google_ai_studio_judge.py report --run outputs/judge/gemini_batch_10
+```
+
+Google also accepts `GEMINI_API_KEY`. `submit` starts asynchronous jobs; the
+terminal can then be closed. Check `status` later and run `collect` once all jobs
+show `JOB_STATE_SUCCEEDED`. Use a fresh directory: old sequential-run request
+files cannot be submitted as batches. See the
+[shared schemas and provider workflows](Experiments/batch_api/judge_workflow.md)
+for execution, human validation and evaluation.
 
 Offline regression tests:
 
 ```bash
-python -m unittest discover -s Experiments/batch_api -p test_openai_batch_judge.py
+python -m unittest discover -s Experiments/batch_api -p 'test_*judge.py'
 ```
 
 ### Restore missing chart images

@@ -91,11 +91,50 @@ def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def exclusion_figures(paths: list[Path], prior: dict[str, Any] | None) -> list[str]:
+    """Load generated chart IDs; keep exclusions in the checkpoint for resume."""
+    if not paths:
+        return sorted(prior.get("excluded_previous_figures", [])) if prior else []
+    figures: set[str] = set()
+    for path in paths:
+        path = path.expanduser()
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if (not isinstance(document, dict) or document.get("dataset") != DATASET_ID
+                or document.get("split") != SPLIT
+                or not isinstance(document.get("results"), list)):
+            raise ValueError(f"{path} must be an Eden {DATASET_ID} {SPLIT} results file.")
+        for record in document["results"]:
+            figure = record.get("example_id") if isinstance(record, dict) else None
+            if not isinstance(figure, str) or not figure:
+                raise ValueError(f"{path} contains a result without a valid example_id.")
+            figures.add(figure)
+    excluded = sorted(figures)
+    if prior is not None and excluded != sorted(prior.get("excluded_previous_figures", [])):
+        raise ValueError("Cannot resume: exclusions differ from the saved run.")
+    return excluded
+
+
+def select_charts(figures: list[str], questions: list[Any], answers: list[Any],
+                  n: int, seed: int, excluded: list[str]) -> list[int]:
+    blocked = PILOT_FIGURES | set(excluded)
+    valid_indices = [i for i, (figure, question, answer) in
+                     enumerate(zip(figures, questions, answers))
+                     if figure not in blocked and question and answer]
+    if n > len(valid_indices):
+        raise ValueError(f"Requested {n} charts, but only {len(valid_indices)} remain "
+                         "with reasoning Q/A after pilot and previous-run exclusions.")
+    return random.Random(seed).sample(valid_indices, n)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--n", type=int, default=125, help="Charts to sample (default: 125; max: 1250).")
     parser.add_argument("--seed", type=int, default=20261117)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--exclude-from", type=Path, action="append", default=[],
+                        help="Exclude generated charts in an Eden results JSON; repeat for multiple runs.")
     parser.add_argument("--cache-dir", type=Path, help="Shared Hugging Face cache; default is the user's HF cache.")
     parser.add_argument("--model-revision", help="Model commit hash; resolved automatically when online.")
     parser.add_argument("--dataset-revision", help="Dataset commit hash; resolved automatically when online.")
@@ -226,6 +265,7 @@ def main() -> None:
     if args.resume and not output.is_file():
         raise FileNotFoundError(f"Cannot resume: {output} does not exist.")
     prior = json.loads(output.read_text(encoding="utf-8")) if args.resume else None
+    excluded = exclusion_figures(args.exclude_from, prior)
     if prior and prior.get("status") == "complete":
         for key, value in {"sample_size": args.n, "seed": args.seed,
                            "prompt_fingerprint": PROMPT_FINGERPRINT,
@@ -277,12 +317,8 @@ def main() -> None:
     figures = dataset["figure_path"]
     questions = dataset["reasoning_q"]
     answers = dataset["reasoning_a"]
-    valid_indices = [i for i, (figure, question, answer) in
-                     enumerate(zip(figures, questions, answers))
-                     if figure not in PILOT_FIGURES and question and answer]
-    if args.n > len(valid_indices):
-        raise ValueError(f"Only {len(valid_indices)} non-pilot validation charts have reasoning Q/A.")
-    selected_indices = random.Random(args.seed).sample(valid_indices, args.n)
+    selected_indices = select_charts(figures, questions, answers, args.n, args.seed, excluded)
+    print(f"Excluded {len(excluded)} previously generated chart IDs; selected {len(selected_indices)} charts.", flush=True)
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     print(f"Loading model on {torch.cuda.get_device_name(0)} with {dtype}", flush=True)
     processor = AutoProcessor.from_pretrained(snapshot)
@@ -312,6 +348,7 @@ def main() -> None:
     else:
         document = {
             **expected,
+            "excluded_previous_figures": excluded,
             "excluded_pilot_figures": sorted(PILOT_FIGURES),
             "generation": {"do_sample": False, "enable_thinking": True},
             "strategy_prompts": STRATEGY_PROMPTS,
